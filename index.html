@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Draggable Link</title>
+    <meta name="description" content="Drag a link to reconnect it. Nodes have custom Adornments for selection, resizing, and reshaping."/>
+    <!-- Copyright 1998-2018 by Northwoods Software Corporation. -->
+    <meta charset="UTF-8">
+    <style>
+        .editor{
+            display: none;
+        }
+        html, body,#sample,#myDiagramDiv{
+            height: 100%;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gojs/1.8.30/go-debug.js"></script>
+    <script id="code">
+        function init() {
+
+            var startTimestamp = new Date(1991).getTime();
+            if (window.goSamples) goSamples();  // init for these samples -- you don't need to call this
+            var $ = go.GraphObject.make;  // for conciseness in defining templates
+
+            myDiagram =
+                    $(go.Diagram, "myDiagramDiv",  // must name or refer to the DIV HTML element
+                            {
+                                grid: $(go.Panel, "Grid",
+                                        $(go.Shape, "LineH", {stroke: "lightgray", strokeWidth: 0.5}),
+                                        $(go.Shape, "LineH", {stroke: "gray", strokeWidth: 0.5, interval: 10}),
+                                        $(go.Shape, "LineV", {stroke: "lightgray", strokeWidth: 0.5}),
+                                        $(go.Shape, "LineV", {stroke: "gray", strokeWidth: 0.5, interval: 10})
+                                ),
+                                allowDrop: true,  // must be true to accept drops from the Palette
+                                "draggingTool.dragsLink": false,
+                                "draggingTool.isGridSnapEnabled": true,
+                                "linkingTool.isUnconnectedLinkValid": true,
+                                "linkingTool.portGravity": 20,
+                                "relinkingTool.isUnconnectedLinkValid": true,
+                                "relinkingTool.portGravity": 20,
+                                "relinkingTool.fromHandleArchetype": $(go.Shape, "Diamond", {segmentIndex: 0, cursor: "pointer", desiredSize: new go.Size(8, 8), fill: "tomato", stroke: "darkred"}),
+                                "relinkingTool.toHandleArchetype": $(go.Shape, "Diamond", {segmentIndex: -1, cursor: "pointer", desiredSize: new go.Size(8, 8), fill: "darkred", stroke: "tomato"}),
+                                "linkReshapingTool.handleArchetype": $(go.Shape, "Diamond", {desiredSize: new go.Size(7, 7), fill: "lightblue", stroke: "deepskyblue"}),
+                                rotatingTool: $(TopRotatingTool),  // defined below
+                                "rotatingTool.snapAngleMultiple": 15,
+                                "rotatingTool.snapAngleEpsilon": 15,
+                                "undoManager.isEnabled": true
+                            });
+
+            // when the document is modified, add a "*" to the title and enable the "Save" button
+            myDiagram.addDiagramListener("Modified", function (e) {
+                var button = document.getElementById("SaveButton");
+                if (button) button.disabled = !myDiagram.isModified;
+                var idx = document.title.indexOf("*");
+                if (myDiagram.isModified) {
+                    if (idx < 0) document.title += "*";
+                } else {
+                    if (idx >= 0) document.title = document.title.substr(0, idx);
+                }
+            });
+
+            // Define a function for creating a "port" that is normally transparent.
+            // The "name" is used as the GraphObject.portId, the "spot" is used to control how links connect
+            // and where the port is positioned on the node, and the boolean "output" and "input" arguments
+            // control whether the user can draw links from or to the port.
+            function makePort(name, spot, output, input) {
+                // the port is basically just a small transparent square
+                return $(go.Shape, "Circle",
+                        {
+                            fill: null,  // not seen, by default; set to a translucent gray by showSmallPorts, defined below
+                            stroke: null,
+                            desiredSize: new go.Size(7, 7),
+                            alignment: spot,  // align the port on the main Shape
+                            alignmentFocus: spot,  // just inside the Shape
+                            portId: name,  // declare this object to be a "port"
+                            fromSpot: spot, toSpot: spot,  // declare where links may connect at this port
+                            fromLinkable: output, toLinkable: input,  // declare whether the user may draw links to/from here
+                            cursor: "pointer"  // show a different cursor to indicate potential link point
+                        });
+            }
+
+            var nodeSelectionAdornmentTemplate =
+                    $(go.Adornment, "Auto",
+                            $(go.Shape, {fill: null, stroke: "deepskyblue", strokeWidth: 1.5, strokeDashArray: [4, 2]}),
+                            $(go.Placeholder)
+                    );
+
+            var nodeResizeAdornmentTemplate =
+                    $(go.Adornment, "Spot",
+                            {locationSpot: go.Spot.Right},
+                            $(go.Placeholder),
+                            $(go.Shape, {alignment: go.Spot.TopLeft, cursor: "nw-resize", desiredSize: new go.Size(6, 6), fill: "lightblue", stroke: "deepskyblue"}),
+                            $(go.Shape, {alignment: go.Spot.Top, cursor: "n-resize", desiredSize: new go.Size(6, 6), fill: "lightblue", stroke: "deepskyblue"}),
+                            $(go.Shape, {alignment: go.Spot.TopRight, cursor: "ne-resize", desiredSize: new go.Size(6, 6), fill: "lightblue", stroke: "deepskyblue"}),
+
+                            $(go.Shape, {alignment: go.Spot.Left, cursor: "w-resize", desiredSize: new go.Size(6, 6), fill: "lightblue", stroke: "deepskyblue"}),
+                            $(go.Shape, {alignment: go.Spot.Right, cursor: "e-resize", desiredSize: new go.Size(6, 6), fill: "lightblue", stroke: "deepskyblue"}),
+
+                            $(go.Shape, {alignment: go.Spot.BottomLeft, cursor: "se-resize", desiredSize: new go.Size(6, 6), fill: "lightblue", stroke: "deepskyblue"}),
+                            $(go.Shape, {alignment: go.Spot.Bottom, cursor: "s-resize", desiredSize: new go.Size(6, 6), fill: "lightblue", stroke: "deepskyblue"}),
+                            $(go.Shape, {alignment: go.Spot.BottomRight, cursor: "sw-resize", desiredSize: new go.Size(6, 6), fill: "lightblue", stroke: "deepskyblue"})
+                    );
+
+            var nodeRotateAdornmentTemplate =
+                    $(go.Adornment,
+                            {locationSpot: go.Spot.Center, locationObjectName: "CIRCLE"},
+                            $(go.Shape, "Circle", {name: "CIRCLE", cursor: "pointer", desiredSize: new go.Size(7, 7), fill: "lightblue", stroke: "deepskyblue"}),
+                            $(go.Shape, {geometryString: "M3.5 7 L3.5 30", isGeometryPositioned: true, stroke: "deepskyblue", strokeWidth: 1.5, strokeDashArray: [4, 2]})
+                    );
+
+            myDiagram.nodeTemplate =
+                    $(go.Node, "Spot",
+                            {locationSpot: go.Spot.Center},
+                            new go.Binding("location", "loc", function (data, node) {
+
+                                var diff = Math.floor((new Date(node.data.year).getTime() - startTimestamp) / 1000);
+
+                                var computed = ((diff / 60)/60)/100;
+                            //    console.log(computed);
+
+                                var position = go.Point.parse.apply(this, [data, node]);
+                                //position.M = computed;
+                              //  console.log(position);
+
+                                return position;
+                            }).makeTwoWay(go.Point.stringify),
+                            {selectable: true, selectionAdornmentTemplate: nodeSelectionAdornmentTemplate},
+                            {resizable: true, resizeObjectName: "PANEL", resizeAdornmentTemplate: nodeResizeAdornmentTemplate},
+                            {rotatable: true, rotateAdornmentTemplate: nodeRotateAdornmentTemplate},
+                            new go.Binding("angle").makeTwoWay(),
+                            // the main object is a Panel that surrounds a TextBlock with a Shape
+                            $(go.Panel, "Auto",
+                                    {name: "PANEL"},
+                                    new go.Binding("desiredSize", "size", go.Size.parse).makeTwoWay(go.Size.stringify),
+                                    $(go.Shape, "Rectangle",  // default figure
+                                            {
+                                                portId: "", // the default port: if no spot on link data, use closest side
+                                                fromLinkable: true, toLinkable: true, cursor: "pointer",
+                                                fill: "white",  // default color
+                                                strokeWidth: 2
+                                            },
+                                            // new go.Binding("figure"),
+                                            new go.Binding("fill")),
+
+                                    $(go.Panel, "Vertical",
+                                            $(go.TextBlock, "year",
+                                                    {
+                                                        font: "bold 11pt Helvetica, Arial, sans-serif",
+                                                        margin: 2,
+                                                        maxSize: new go.Size(160, NaN),
+                                                        wrap: go.TextBlock.WrapFit,
+                                                        editable: true
+                                                    },
+                                                    new go.Binding("text", "year").makeTwoWay()),
+                                            $(go.TextBlock, "text",
+                                                    {
+                                                        font: "bold 11pt Helvetica, Arial, sans-serif",
+                                                        margin: 2,
+                                                        maxSize: new go.Size(160, NaN),
+                                                        wrap: go.TextBlock.WrapFit,
+                                                        editable: true
+                                                    },
+                                                    new go.Binding("text").makeTwoWay())
+                                    )
+                            ),
+                            // four small named ports, one on each side:
+                            makePort("T", go.Spot.Top, false, true),
+                            makePort("L", go.Spot.Left, true, true),
+                            makePort("R", go.Spot.Right, true, true),
+                            makePort("B", go.Spot.Bottom, true, false),
+                            { // handle mouse enter/leave events to show/hide the ports
+                                mouseEnter: function (e, node) {
+                                    showSmallPorts(node, true);
+                                },
+                                mouseLeave: function (e, node) {
+                                    showSmallPorts(node, false);
+                                }
+                            }
+                    )
+            ;
+
+            function showSmallPorts(node, show) {
+                node.ports.each(function (port) {
+                    if (port.portId !== "") {  // don't change the default port, which is the big shape
+                        port.fill = show ? "rgba(0,0,0,.3)" : null;
+                    }
+                });
+            }
+
+            var linkSelectionAdornmentTemplate =
+                    $(go.Adornment, "Link",
+                            $(go.Shape,
+                                    // isPanelMain declares that this Shape shares the Link.geometry
+                                    {isPanelMain: true, fill: null, stroke: "deepskyblue", strokeWidth: 0})  // use selection object's strokeWidth
+                    );
+
+            myDiagram.linkTemplate =
+                    $(go.Link,  // the whole link panel
+                            {selectable: true, selectionAdornmentTemplate: linkSelectionAdornmentTemplate},
+                            {relinkableFrom: true, relinkableTo: true, reshapable: true},
+                            {
+                                routing: go.Link.AvoidsNodes,
+                                curve: go.Link.JumpOver,
+                                corner: 5,
+                                toShortLength: 4
+                            },
+                            new go.Binding("points").makeTwoWay(),
+                            $(go.Shape,  // the link path shape
+                                    {isPanelMain: true, strokeWidth: 2}),
+                            $(go.Shape,  // the arrowhead
+                                    {toArrow: "Standard", stroke: null}),
+                            $(go.Panel, "Auto",
+                                    new go.Binding("visible", "isSelected").ofObject(),
+                                    $(go.Shape, "RoundedRectangle",  // the link shape
+                                            {fill: "#F8F8F8", stroke: null}),
+                                    $(go.TextBlock, "text",
+                                            {
+                                                textAlign: "center",
+                                                font: "10pt helvetica, arial, sans-serif",
+                                                stroke: "#919191",
+                                                margin: 2,
+                                                minSize: new go.Size(10, NaN),
+                                                editable: true
+                                            },
+                                            new go.Binding("text", "text").makeTwoWay()),
+                                    $(go.TextBlock, "year",
+                                            {
+                                                textAlign: "center",
+                                                font: "10pt helvetica, arial, sans-serif",
+                                                stroke: "#919191",
+                                                margin: 2,
+                                                minSize: new go.Size(10, NaN),
+                                                editable: true
+                                            },
+                                            new go.Binding("text", "year").makeTwoWay())
+                            )
+                    );
+
+//            var templmap = new go.Map("string", go.Node);
+//            // for each of the node categories, specify which template to use
+//
+//
+//
+//
+//            templmap.add("simple", simpletemplate);
+//            templmap.add("detailed", detailtemplate);
+//            // for the default category, "", use the same template that Diagrams use by default;
+//            // this just shows the key value as a simple TextBlock
+//            templmap.add("", diagram.nodeTemplate);
+//
+//            myDiagram.nodeTemplateMap = templmap;
+
+
+            load();  // load an initial diagram from some JSON text
+
+            // initialize the Palette that is on the left side of the page
+            myPalette =
+                    $(go.Palette, "myPaletteDiv",  // must name or refer to the DIV HTML element
+                            {
+                                maxSelectionCount: 1,
+                                nodeTemplateMap: myDiagram.nodeTemplateMap,  // share the templates used by myDiagram
+                                linkTemplate: // simplify the link template, just in this Palette
+                                        $(go.Link,
+                                                { // because the GridLayout.alignment is Location and the nodes have locationSpot == Spot.Center,
+                                                    // to line up the Link in the same manner we have to pretend the Link has the same location spot
+                                                    locationSpot: go.Spot.Center,
+                                                    selectionAdornmentTemplate: $(go.Adornment, "Link",
+                                                            {locationSpot: go.Spot.Center},
+                                                            $(go.Shape,
+                                                                    {isPanelMain: true, fill: null, stroke: "deepskyblue", strokeWidth: 0}),
+                                                            $(go.Shape,  // the arrowhead
+                                                                    {toArrow: "Standard", stroke: null})
+                                                    )
+                                                },
+                                                {
+                                                    routing: go.Link.AvoidsNodes,
+                                                    curve: go.Link.JumpOver,
+                                                    corner: 5,
+                                                    toShortLength: 4
+                                                },
+                                                new go.Binding("points"),
+                                                $(go.Shape,  // the link path shape
+                                                        {isPanelMain: true, strokeWidth: 2}),
+                                                $(go.Shape,  // the arrowhead
+                                                        {toArrow: "Standard", stroke: null})
+                                        ),
+                                model: new go.GraphLinksModel([  // specify the contents of the Palette
+                                    {year: 2010, text: "Event", figure: "Circle", fill: "#B37777"},
+                                    {year: 2010, text: "Source frork", figure: "Diamond", fill: "#AA6C39"},
+                                    {year: 2010, text: "Hardfork\nfrork", figure: "Diamond", fill: "#226666"},
+                                    {year: 2010, text: "Soft frork", figure: "Diamond", fill: "#2D882D"},
+                                    {year: 2010, text: "Die", figure: "Circle", fill: "#ff0000"},
+                                ], [
+                                    // the Palette also has a disconnected Link, which the user can drag-and-drop
+                                    {points: new go.List(go.Point).addAll([new go.Point(0, 0), new go.Point(30, 0), new go.Point(30, 40), new go.Point(60, 40)])}
+                                ])
+                            });
+        }
+
+
+        function TopRotatingTool() {
+            go.RotatingTool.call(this);
+        }
+        go.Diagram.inherit(TopRotatingTool, go.RotatingTool);
+
+        /** @override */
+        TopRotatingTool.prototype.updateAdornments = function (part) {
+            go.RotatingTool.prototype.updateAdornments.call(this, part);
+            var adornment = part.findAdornment("Rotating");
+            if (adornment !== null) {
+                adornment.location = part.rotateObject.getDocumentPoint(new go.Spot(0.5, 0, 0, -30));  // above middle top
+            }
+        };
+
+        /** @override */
+        TopRotatingTool.prototype.rotate = function (newangle) {
+            go.RotatingTool.prototype.rotate.call(this, newangle + 90);
+        };
+        // end of TopRotatingTool class
+
+
+        // Show the diagram's model in JSON format that the user may edit
+        function save() {
+            saveDiagramProperties();  // do this first, before writing to JSON
+            document.getElementById("mySavedModel").value = myDiagram.model.toJson();
+            myDiagram.isModified = false;
+        }
+        function load() {
+           var data =  JSON.parse(document.getElementById("mySavedModel").value);
+            JSON.stringify(data.linkDataArray.map(function(item){
+                item.points = null;
+            }));
+            myDiagram.model = go.Model.fromJson(JSON.stringify(data));
+            console.log(myDiagram.model );
+            loadDiagramProperties();  // do this after the Model.modelData has been brought into memory
+        }
+
+        function saveDiagramProperties() {
+            myDiagram.model.modelData.position = go.Point.stringify(myDiagram.position);
+        }
+        function loadDiagramProperties(e) {
+            // set Diagram.initialPosition, not Diagram.position, to handle initialization side-effects
+            var pos = myDiagram.model.modelData.position;
+            if (pos) myDiagram.initialPosition = go.Point.parse(pos);
+        }
+    </script>
+</head>
+<body onload="init()">
+<div id="sample">
+    <div style="width: 100%; display: flex; justify-content: space-between; height: 100%">
+        <div id="myPaletteDiv" class="editor"  style="width: 175px; margin-right: 2px; background-color: whitesmoke; border: solid 1px black"></div>
+        <div id="myDiagramDiv" style="flex-grow: 1;"></div>
+    </div>
+    http://list.wiki/Bitcoin_Hard_Forks<br>
+    http://list.wiki/Cryptocurrencies https://ethereum.stackexchange.com/questions/13014/please-provide-a-summary-of-the-ethereum-hard-forks
+
+    <br>
+    <div class="editor" >
+        <div>
+            <button id="SaveButton" onclick="save()">Save</button>
+            <button onclick="load()">Load</button>
+            Diagram Model saved in JSON format:
+        </div>
+    <textarea id="mySavedModel" style="width:100%;height:300px">
+{ "class": "go.GraphLinksModel",
+  "linkFromPortIdProperty": "fromPort",
+  "linkToPortIdProperty": "toPort",
+  "modelData": {"position":"298.5146484374992 204.12455139160159"},
+  "nodeDataArray": [
+{"year":"1991-01-01", "text":"Blockchain", "figure":"Circle", "fill":"#B37777", "key":-1, "loc":"250 310"},
+{"year":"9 January 2009", "text":"Bitcoin (Bitcoin Core)", "figure":"Circle", "fill":"#B37777", "key":-2, "loc":"400 310"},
+{"year":"2010", "text":"First commercial transaction", "figure":"Circle", "fill":"#B37777", "key":-3, "loc":"580 310"},
+{"year":"2011", "text":"Fork Litecoin", "figure":"Diamond", "fill":"#AA6C39", "key":-4, "loc":"720 310"},
+{"year":"2011", "text":"Litecoin", "figure":"Circle", "fill":"#B37777", "key":-5, "loc":"770 400"},
+{"year":"2015", "text":"Fork Bitcoin XT", "figure":"Diamond", "fill":"#AA6C39", "key":-6, "loc":"860 310"},
+{"year":"2015", "text":"Bitcoin XT", "figure":"Circle", "fill":"#B37777", "key":-7, "loc":"920 400"},
+{"year":"2016", "text":"Bitcoin Classic", "figure":"Diamond", "fill":"#AA6C39", "key":-8, "loc":"1400 310"},
+{"year":"2016", "text":"Bitcoin Classic", "figure":"Circle", "fill":"#B37777", "key":-9, "loc":"1470 410"},
+{"year":"1 August 2017", "text":"Bitcoin Cash", "figure":"Diamond", "fill":"#226666", "key":-10, "loc":"1550 310"},
+{"year":"24 October 2017", "text":"Bitcoin Gold", "figure":"Diamond", "fill":"#226666", "key":-11, "loc":"1690 310"},
+{"year":"2018", "text":"Bitcoin Private", "figure":"Diamond", "fill":"#226666", "key":-12, "loc":"1880 310"},
+{"year":"2017", "text":"Bitcoin Cash", "figure":"Circle", "fill":"#B37777", "key":-13, "loc":"1610 410"},
+{"year":"2017", "text":"Bitcoin Gold", "figure":"Circle", "fill":"#B37777", "key":-14, "loc":"1780 410"},
+{"year":"2018", "text":"Bitcoin Private", "figure":"Circle", "fill":"#B37777", "key":-15, "loc":"1950 400"},
+{"year":"2015", "text":"ethereum ", "figure":"Circle", "fill":"#B37777", "key":-16, "loc":"920 600"},
+{"year":"2014", "text":"ethereum crowdsale", "figure":"Circle", "fill":"#B37777", "key":-17, "loc":"820 500", "angle":0},
+{"year":"2016", "text":"The DAO hack", "figure":"Circle", "fill":"#B37777", "key":-18, "loc":"1240 720"},
+{"year":"2017", "text":"Parity - The beginning", "figure":"Circle", "fill":"#B37777", "key":-19, "loc":"1480 850"},
+{"year":"2017", "text":"Parity - Shutting down ", "figure":"Circle", "fill":"#B37777", "key":-20, "loc":"1710 850"},
+{"year":"2018", "text":"POWH Coin-Self-destruction", "figure":"Circle", "fill":"#B37777", "key":-21, "loc":"1920 850"},
+{"year":"20 Jul 2016", "text":"DAO", "figure":"Diamond", "fill":"#226666", "key":-22, "loc":"1360 600", "size":"127 45"},
+{"year":"20 Jul 2016", "text":"Ethereum Classic \n(The DAO)", "figure":"Circle", "fill":"#B37777", "key":-23, "loc":"1460 700"},
+{"year":"18 Oct 2016", "text":"Tangerine Whistle", "figure":"Diamond", "fill":"#226666", "key":-25, "loc":"1520 600"},
+{"year":"2017-04-23", "text":"Spurious Dragon", "figure":"Diamond", "fill":"#226666", "key":-26, "loc":"1790 600"},
+{"year":"14 Mar 2016", "text":"Homestead", "figure":"Diamond", "fill":"#226666", "key":-27, "loc":"1170 600"},
+{"year":"07 Sep 2015", "text":"Ice Age", "figure":"Diamond", "fill":"#226666", "key":-28, "loc":"1040 600"},
+{"year":"2018-11-23", "text":"Byzantium", "figure":"Diamond", "fill":"#226666", "key":-29, "loc":"1930 600"},
+{"year":"2005", "text":"Torrents", "figure":"Circle", "fill":"#B37777", "key":-30, "loc":"391.80889892578125 230", "size":"88 41.75089721679687"}
+ ],
+  "linkDataArray": [
+{"from":-1, "to":-2, "fromPort":"R", "toPort":"L"},
+{"from":-3, "to":-4, "fromPort":"R", "toPort":"L"},
+{"from":-2, "to":-3, "fromPort":"", "toPort":"L"},
+{"from":-4, "to":-5, "fromPort":"B", "toPort":"L", "points":[720,330.8754486083985,720,340.8754486083985,720,400,724.1243896484377,400,728.2487792968753,400,738.2487792968753,400]},
+{"from":-4, "to":-6, "fromPort":"R", "toPort":"L", "points":[770.08740234375,310,780.08740234375,310,785.8343505859375,310,785.8343505859375,310,791.5812988281251,310,801.5812988281251,310]},
+{"from":-6, "to":-7, "fromPort":"B", "toPort":"L", "points":[860.0000000000001,330.8754486083985,860.0000000000001,340.8754486083985,860.0000000000001,400,864.958740234375,400,869.91748046875,400,879.91748046875,400]},
+{"from":-6, "to":-8, "fromPort":"R", "toPort":"L", "points":[918.4187011718751,310,928.4187011718751,310,1130.8258056640625,310,1130.8258056640625,310,1333.23291015625,310,1343.23291015625,310]},
+{"from":-8, "to":-9, "fromPort":"B", "toPort":"L", "points":[1400,330.8754486083985,1400,340.8754486083985,1400,410,1401.616455078125,410,1403.23291015625,410,1413.23291015625,410]},
+{"from":-8, "to":-10, "fromPort":"R", "toPort":"L", "points":[1456.76708984375,310,1466.76708984375,310,1477.0338821411133,310,1477.0338821411133,310,1487.3006744384766,310,1497.3006744384766,310]},
+{"from":-10, "to":-11, "fromPort":"R", "toPort":"L", "points":[1602.6993255615234,310,1612.6993255615234,310,1616.531852722168,310,1616.531852722168,310,1620.3643798828125,310,1630.3643798828125,310]},
+{"from":-11, "to":-12, "fromPort":"R", "toPort":"L", "points":[1749.6356201171875,310,1759.6356201171875,310,1787.0604858398442,310,1787.0604858398442,310,1814.4853515625011,310,1824.4853515625011,310]},
+{"from":-10, "to":-13, "fromPort":"B", "toPort":"L", "points":[1550,330.8754486083985,1550,340.8754486083985,1550,410,1550.5806884765632,410,1551.1613769531264,410,1561.1613769531264,410]},
+{"from":-11, "to":-14, "fromPort":"B", "toPort":"L", "points":[1690,330.8754486083985,1690,340.8754486083985,1690,410,1706.210571289062,410,1722.4211425781243,410,1732.4211425781243,410]},
+{"from":-12, "to":-15, "fromPort":"B", "toPort":"L", "points":[1880.0000000000011,330.8754486083985,1880.0000000000011,340.8754486083985,1880.0000000000011,400,1882.2426757812505,400,1884.4853515625,400,1894.4853515625,400]},
+{"from":-17, "to":-16, "fromPort":"B", "toPort":"L", "points":[820.0000000000002,520.8754486083983,820.0000000000002,530.8754486083983,820.0000000000002,599.9999999999999,846.6195068359377,599.9999999999999,873.2390136718751,599.9999999999999,883.2390136718751,599.9999999999999]},
+{"from":-19, "to":-20, "fromPort":"R", "toPort":"L", "points":[1561.753662109375,850.0000000000001,1571.753662109375,850.0000000000001,1594.5880126953125,850.0000000000001,1594.5880126953125,850.0000000000001,1617.42236328125,850.0000000000001,1627.42236328125,850.0000000000001]},
+{"from":-20, "to":-21, "fromPort":"R", "toPort":"L", "points":[1792.57763671875,850.0000000000001,1802.57763671875,850.0000000000001,1816.6644287109377,850.0000000000001,1816.6644287109377,849.9999999999998,1830.7512207031255,849.9999999999998,1840.7512207031255,849.9999999999998]},
+{"from":-22, "to":-23, "fromPort":"B", "toPort":"L", "points":[1360,622.5,1360,632.5,1360,700,1372.7412490844727,700,1385.4824981689453,700,1395.4824981689453,700]},
+{"from":-25, "to":-26, "fromPort":"", "toPort":"L", "points":[1587.039306640625,599.9999999999999,1597.039306640625,599.9999999999999,1656.6021728515625,599.9999999999999,1656.6021728515625,599.9999999999999,1716.1650390624998,599.9999999999999,1726.1650390624998,599.9999999999999]},
+{"from":-28, "to":-27, "fromPort":"R", "toPort":"L", "points":[1085.9492187499998,599.9999999999999,1095.9492187499998,599.9999999999999,1105.208740234375,599.9999999999999,1105.208740234375,599.9999999999999,1114.4682617187502,599.9999999999999,1124.4682617187502,599.9999999999999]},
+{"from":-22, "to":-25, "fromPort":"", "toPort":"L", "points":[1423.5,600,1433.5,600,1438.2303466796875,600,1438.2303466796875,599.9999999999999,1442.960693359375,599.9999999999999,1452.960693359375,599.9999999999999]},
+{"from":-26, "to":-29, "fromPort":"", "toPort":"L", "points":[1853.8349609374998,599.9999999999999,1863.8349609374998,599.9999999999999,1871.8867149353027,599.9999999999999,1871.8867149353027,600,1879.9384689331055,600,1889.9384689331055,600]},
+{"from":-1, "to":-30, "fromPort":"", "toPort":"L", "points":[293.01220703125,310,303.01220703125,310,303.01220703125,310,303.01220703125,230,337.80889892578125,230,347.80889892578125,230]},
+{"from":-1, "to":-17, "fromPort":"R", "toPort":"L", "points":[293.01220703125,310,303.01220703125,310,303.01220703125,310,303.01220703125,499.99999999999983,734.4719238281252,499.99999999999983,744.4719238281252,499.99999999999983]},
+{"from":-16, "to":-28, "fromPort":"R", "toPort":"L", "points":[956.7609863281251,599.9999999999999,966.7609863281251,599.9999999999999,975.4058837890625,599.9999999999999,975.4058837890625,599.9999999999999,984.0507812499998,599.9999999999999,994.0507812499998,599.9999999999999]},
+{"from":-27, "to":-22, "fromPort":"R", "toPort":"L", "points":[1215.5317382812502,599.9999999999999,1225.5317382812502,599.9999999999999,1256.015869140625,599.9999999999999,1256.015869140625,600,1286.5,600,1296.5,600]}
+ ]}
+
+    </textarea>
+    </div>
+</div>
+</body>
+</html>
